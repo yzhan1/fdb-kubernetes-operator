@@ -1428,7 +1428,43 @@ type MaintenanceModeOptions struct {
 	// MaintenanceModeTimeSeconds provides the duration for the zone to be in maintenance. It will automatically be switched off after the time elapses.
 	// Default is 600.
 	MaintenanceModeTimeSeconds *int `json:"maintenanceModeTimeSeconds,omitempty"`
+
+	// ResetCheck defines the check that must pass before the operator resets the maintenance mode, once all
+	// processes in the maintenance zone have been restarted. ClusterQos checks the cluster-wide QoS metrics,
+	// including the worst storage and log server queue sizes. ProcessesUnderMaintenance checks that the storage
+	// processes in the maintenance zone report a storage role that has caught up, based on MaxDataLagSeconds and
+	// MaxDurabilityLagSeconds, and checks the cluster-wide worst storage server lag but not the queue sizes.
+	// Default is ClusterQos.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=ClusterQos;ProcessesUnderMaintenance
+	ResetCheck *MaintenanceModeResetCheck `json:"resetCheck,omitempty"`
+
+	// MaxDataLagSeconds defines the maximum data lag, in seconds, of the storage roles in the maintenance zone
+	// for the ProcessesUnderMaintenance reset check.
+	// Default is 5.
+	// +kubebuilder:validation:Minimum=0
+	MaxDataLagSeconds *int `json:"maxDataLagSeconds,omitempty"`
+
+	// MaxDurabilityLagSeconds defines the maximum durability lag, in seconds, of the storage roles in the
+	// maintenance zone for the ProcessesUnderMaintenance reset check. The durability lag of a healthy storage
+	// server is around 5 seconds, as storage servers keep 5 seconds of versions in memory.
+	// Default is 10.
+	// +kubebuilder:validation:Minimum=0
+	MaxDurabilityLagSeconds *int `json:"maxDurabilityLagSeconds,omitempty"`
 }
+
+// MaintenanceModeResetCheck defines the check that must pass before the operator resets the maintenance mode.
+// +kubebuilder:validation:MaxLength=256
+type MaintenanceModeResetCheck string
+
+const (
+	// MaintenanceModeResetCheckClusterQos checks the cluster-wide QoS metrics before resetting the maintenance mode.
+	MaintenanceModeResetCheckClusterQos MaintenanceModeResetCheck = "ClusterQos"
+
+	// MaintenanceModeResetCheckProcessesUnderMaintenance checks that the storage processes in the maintenance zone
+	// have caught up before resetting the maintenance mode.
+	MaintenanceModeResetCheckProcessesUnderMaintenance MaintenanceModeResetCheck = "ProcessesUnderMaintenance"
+)
 
 // TaintReplacementOption defines the taint key and taint duration the operator will react to a tainted node
 // Example of TaintReplacementOption
@@ -2874,6 +2910,33 @@ func (cluster *FoundationDBCluster) GetMaintenaceModeTimeoutSeconds() int {
 	return ptr.Deref(
 		cluster.Spec.AutomationOptions.MaintenanceModeOptions.MaintenanceModeTimeSeconds,
 		600,
+	)
+}
+
+// GetMaintenanceModeResetCheck returns the check that must pass before the maintenance mode is reset. Defaults to
+// MaintenanceModeResetCheckClusterQos.
+func (cluster *FoundationDBCluster) GetMaintenanceModeResetCheck() MaintenanceModeResetCheck {
+	return ptr.Deref(
+		cluster.Spec.AutomationOptions.MaintenanceModeOptions.ResetCheck,
+		MaintenanceModeResetCheckClusterQos,
+	)
+}
+
+// GetMaintenanceModeMaxDataLagSeconds returns the maximum data lag of the storage roles in the maintenance zone
+// for the ProcessesUnderMaintenance reset check. Defaults to 5.
+func (cluster *FoundationDBCluster) GetMaintenanceModeMaxDataLagSeconds() int {
+	return ptr.Deref(
+		cluster.Spec.AutomationOptions.MaintenanceModeOptions.MaxDataLagSeconds,
+		5,
+	)
+}
+
+// GetMaintenanceModeMaxDurabilityLagSeconds returns the maximum durability lag of the storage roles in the
+// maintenance zone for the ProcessesUnderMaintenance reset check. Defaults to 10.
+func (cluster *FoundationDBCluster) GetMaintenanceModeMaxDurabilityLagSeconds() int {
+	return ptr.Deref(
+		cluster.Spec.AutomationOptions.MaintenanceModeOptions.MaxDurabilityLagSeconds,
+		10,
 	)
 }
 

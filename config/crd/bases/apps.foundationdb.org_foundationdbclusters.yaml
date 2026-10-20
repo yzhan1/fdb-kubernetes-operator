@@ -103,6 +103,18 @@ spec:
                         type: boolean
                       maintenanceModeTimeSeconds:
                         type: integer
+                      maxDataLagSeconds:
+                        minimum: 0
+                        type: integer
+                      maxDurabilityLagSeconds:
+                        minimum: 0
+                        type: integer
+                      resetCheck:
+                        enum:
+                        - ClusterQos
+                        - ProcessesUnderMaintenance
+                        maxLength: 256
+                        type: string
                       resetMaintenanceMode:
                         type: boolean
                     type: object

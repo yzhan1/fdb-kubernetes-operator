@@ -133,7 +133,15 @@ func (c maintenanceModeChecker) reconcile(
 	}
 
 	// Check if the maintenance mode can be removed.
-	err = fdbstatus.CanSafelyRemoveMaintenanceMode(status)
+	if cluster.GetMaintenanceModeResetCheck() == fdbv1beta2.MaintenanceModeResetCheckProcessesUnderMaintenance {
+		err = fdbstatus.CanSafelyRemoveMaintenanceModeForProcesses(
+			status,
+			time.Duration(cluster.GetMaintenanceModeMaxDataLagSeconds())*time.Second,
+			time.Duration(cluster.GetMaintenanceModeMaxDurabilityLagSeconds())*time.Second,
+		)
+	} else {
+		err = fdbstatus.CanSafelyRemoveMaintenanceMode(status)
+	}
 	if err != nil {
 		return &requeue{curError: err, delayedRequeue: true}
 	}

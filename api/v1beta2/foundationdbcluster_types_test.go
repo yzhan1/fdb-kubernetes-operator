@@ -6244,6 +6244,66 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			}, "testing"),
 	)
 
+	DescribeTable(
+		"when getting the maintenance mode reset check options",
+		func(
+			options MaintenanceModeOptions,
+			expectedResetCheck MaintenanceModeResetCheck,
+			expectedMaxDataLag int,
+			expectedMaxDurabilityLag int,
+		) {
+			cluster := &FoundationDBCluster{
+				Spec: FoundationDBClusterSpec{
+					AutomationOptions: FoundationDBClusterAutomationOptions{
+						MaintenanceModeOptions: options,
+					},
+				},
+			}
+
+			Expect(cluster.GetMaintenanceModeResetCheck()).To(Equal(expectedResetCheck))
+			Expect(cluster.GetMaintenanceModeMaxDataLagSeconds()).To(Equal(expectedMaxDataLag))
+			Expect(cluster.GetMaintenanceModeMaxDurabilityLagSeconds()).
+				To(Equal(expectedMaxDurabilityLag))
+		},
+		Entry("nothing is set",
+			MaintenanceModeOptions{},
+			MaintenanceModeResetCheckClusterQos,
+			5,
+			10,
+		),
+		Entry("all values are set",
+			MaintenanceModeOptions{
+				ResetCheck: ptr.To(
+					MaintenanceModeResetCheckProcessesUnderMaintenance,
+				),
+				MaxDataLagSeconds:       ptr.To(2),
+				MaxDurabilityLagSeconds: ptr.To(20),
+			},
+			MaintenanceModeResetCheckProcessesUnderMaintenance,
+			2,
+			20,
+		),
+		Entry("only the reset check is set",
+			MaintenanceModeOptions{
+				ResetCheck: ptr.To(
+					MaintenanceModeResetCheckProcessesUnderMaintenance,
+				),
+			},
+			MaintenanceModeResetCheckProcessesUnderMaintenance,
+			5,
+			10,
+		),
+		Entry("the lag limits are set to 0",
+			MaintenanceModeOptions{
+				MaxDataLagSeconds:       ptr.To(0),
+				MaxDurabilityLagSeconds: ptr.To(0),
+			},
+			MaintenanceModeResetCheckClusterQos,
+			0,
+			0,
+		),
+	)
+
 	When("creating a new ProcessGroup", func() {
 		var processGroupID ProcessGroupID
 		var processClass ProcessClass

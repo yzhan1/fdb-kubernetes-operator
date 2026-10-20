@@ -88,6 +88,8 @@ type AdminClient struct {
 	processesUnderMaintenance                map[fdbv1beta2.ProcessGroupID]int64
 	RunLoopBusy                              map[fdbv1beta2.ProcessGroupID]float64
 	ProcessMessages                          map[fdbv1beta2.ProcessGroupID][]fdbv1beta2.FoundationDBStatusProcessMessage
+	// ProcessRoles contains additional roles that will be reported for the processes of a process group.
+	ProcessRoles map[fdbv1beta2.ProcessGroupID][]fdbv1beta2.FoundationDBStatusProcessRoleInfo
 }
 
 var _ fdbadminclient.AdminClient = (*AdminClient)(nil)
@@ -147,6 +149,9 @@ func NewMockAdminClientUncast(
 			RunLoopBusy:               make(map[fdbv1beta2.ProcessGroupID]float64),
 			ProcessMessages: make(
 				map[fdbv1beta2.ProcessGroupID][]fdbv1beta2.FoundationDBStatusProcessMessage,
+			),
+			ProcessRoles: make(
+				map[fdbv1beta2.ProcessGroupID][]fdbv1beta2.FoundationDBStatusProcessRoleInfo,
 			),
 		}
 		adminClientCache[cluster.Name] = cachedClient
@@ -328,6 +333,8 @@ func (client *AdminClient) GetStatus() (*fdbv1beta2.FoundationDBStatus, error) {
 					},
 				)
 			}
+
+			fdbRoles = append(fdbRoles, client.ProcessRoles[processGroupID]...)
 
 			version, ok := client.VersionProcessGroups[processGroupID]
 			if !ok {

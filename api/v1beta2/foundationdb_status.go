@@ -231,6 +231,11 @@ type FoundationDBStatusProcessRoleInfo struct {
 	// DataLag indicates whether this process is lagging in its writes.
 	DataLag FoundationDBStatusLagInfo `json:"data_lag,omitempty"`
 
+	// DurabilityLag indicates how far the durable version of this storage role is behind its data version.
+	// FDB reports data_lag and durability_lag together, only once the storage role's metrics are available, so a
+	// nil value means the lag of this storage role is unknown.
+	DurabilityLag *FoundationDBStatusLagInfo `json:"durability_lag,omitempty"`
+
 	// KVStoreUsedBytes indicates how much space this process is using on its disk.
 	KVStoreUsedBytes *int64 `json:"kvstore_used_bytes"`
 
