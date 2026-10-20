@@ -390,6 +390,15 @@ MaintenanceModeOptions controls options for placing zones in maintenance mode.
 | UseMaintenanceModeChecker | UseMaintenanceModeChecker defines whether the operator is allowed to use maintenance mode before updating pods. If this setting is set to true the operator will set and reset the maintenance mode when updating pods. If this setting is set to true, then ResetMaintenanceMode will also be enabled to make sure the operator is able to reset the maintenance mode again. Default is false. | *bool | false |
 | resetMaintenanceMode | ResetMaintenanceMode defines whether the operator should reset the maintenance mode if all storage processes under the maintenance zone have been restarted. The default is false. For more details see: https://github.com/FoundationDB/fdb-kubernetes-operator/blob/main/docs/manual/operations.md#maintenance Default is false. | *bool | false |
 | maintenanceModeTimeSeconds | MaintenanceModeTimeSeconds provides the duration for the zone to be in maintenance. It will automatically be switched off after the time elapses. Default is 600. | *int | false |
+| resetCheck | ResetCheck defines the check that must pass before the operator resets the maintenance mode, once all processes in the maintenance zone have been restarted. ClusterQos checks the cluster-wide QoS metrics, including the worst storage and log server queue sizes. ProcessesUnderMaintenance checks that the storage processes in the maintenance zone report a storage role that has caught up, based on MaxDataLagSeconds and MaxDurabilityLagSeconds, and checks the cluster-wide worst storage server lag but not the queue sizes. Default is ClusterQos. | *[MaintenanceModeResetCheck](#maintenancemoderesetcheck) | false |
+| maxDataLagSeconds | MaxDataLagSeconds defines the maximum data lag, in seconds, of the storage roles in the maintenance zone for the ProcessesUnderMaintenance reset check. Default is 5. | *int | false |
+| maxDurabilityLagSeconds | MaxDurabilityLagSeconds defines the maximum durability lag, in seconds, of the storage roles in the maintenance zone for the ProcessesUnderMaintenance reset check. The durability lag of a healthy storage server is around 5 seconds, as storage servers keep 5 seconds of versions in memory. Default is 10. | *int | false |
+
+[Back to TOC](#table-of-contents)
+
+## MaintenanceModeResetCheck
+
+MaintenanceModeResetCheck defines the check that must pass before the operator resets the maintenance mode.
 
 [Back to TOC](#table-of-contents)
 

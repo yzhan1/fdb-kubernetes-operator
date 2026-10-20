@@ -188,6 +188,27 @@ Before the operator performs the reset of the maintenance zone it will check the
 It will wait until no storage server is lagging behind more than 60 seconds and it will ensure that the queued bytes for log and storage servers are not exceeding 250MB.
 For more details check the `CheckQosStatus` method in the [fdbstatus package](https://github.com/FoundationDB/fdb-kubernetes-operator/tree/main/pkg/fdbstatus)
 
+The worst queue sizes reflect the write load of the whole cluster, so on clusters with a high write rate they can stay above 250MB even when the restarted processes have caught up.
+In this case the maintenance mode is only removed once it times out.
+Setting `resetCheck` to `ProcessesUnderMaintenance` makes the operator check the restarted processes instead:
+
+```yaml
+spec:
+  automationOptions:
+    maintenanceModeOptions:
+      UseMaintenanceModeChecker: true
+      resetCheck: ProcessesUnderMaintenance
+      # Optional, the defaults are 5 and 10 seconds.
+      maxDataLagSeconds: 5
+      maxDurabilityLagSeconds: 10
+```
+
+With this check the operator resets the maintenance zone only when every storage process in the maintenance zone that is not excluded reports a storage role with a data lag of at most `maxDataLagSeconds` and a durability lag of at most `maxDurabilityLagSeconds`.
+The operator also waits if any storage process reports no zone ID, if a storage process in the maintenance zone reports no storage role or no lag information, or if no storage process is reported in the maintenance zone.
+The cluster-wide worst storage server data and durability lag must still be at most 60 seconds, but the queue sizes are not checked.
+The durability lag of a healthy storage server is around 5 seconds, because storage servers keep 5 seconds of versions in memory before making them durable.
+For more details check the `CanSafelyRemoveMaintenanceModeForProcesses` method in the [fdbstatus package](../../pkg/fdbstatus/status_checks.go).
+
 ### External integration
 
 Depending on your Kubernetes setup, you might be able to use this integration during Kubernetes node upgrades.

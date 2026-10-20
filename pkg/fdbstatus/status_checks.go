@@ -746,21 +746,9 @@ func ConfigurationChangeAllowedWithMinimumUptime(
 // Check https://apple.github.io/foundationdb/administration.html#machine-readable-status for some additional background
 // information.
 func CheckQosStatus(status *fdbv1beta2.FoundationDBStatus) error {
-	// We picked this value from the FoundationDB implementation, this is the default threshold to report a process as lagging.
-	if status.Cluster.Qos.WorstDataLagStorageServer.Seconds > maximumDataLag {
-		return fmt.Errorf(
-			"worst data lag is too high, current worst data lag in seconds: %0.2f, maximum allowed lag:  %0.2f",
-			status.Cluster.Qos.WorstDataLagStorageServer.Seconds,
-			maximumDataLag,
-		)
-	}
-
-	if status.Cluster.Qos.WorstDurabilityLagStorageServer.Seconds > maximumDataLag {
-		return fmt.Errorf(
-			"worst durability lag is too high, current worst durability lag in seconds: %0.2f, maximum allowed lag:  %0.2f",
-			status.Cluster.Qos.WorstDurabilityLagStorageServer.Seconds,
-			maximumDataLag,
-		)
+	err := checkWorstStorageServerLag(status)
+	if err != nil {
+		return err
 	}
 
 	if status.Cluster.Qos.WorstQueueBytesLogServer > maximumQueueByteSize {
@@ -776,6 +764,29 @@ func CheckQosStatus(status *fdbv1beta2.FoundationDBStatus) error {
 			"worst queue bytes for storage server is too high, current worst queue bytes: %s, maximum allowed queue bytes: %s",
 			PrettyPrintBytes(status.Cluster.Qos.WorstQueueBytesStorageServer),
 			PrettyPrintBytes(maximumQueueByteSize),
+		)
+	}
+
+	return nil
+}
+
+// checkWorstStorageServerLag returns an error if the cluster-wide worst data lag or durability lag of the storage
+// servers exceeds maximumDataLag.
+func checkWorstStorageServerLag(status *fdbv1beta2.FoundationDBStatus) error {
+	// We picked this value from the FoundationDB implementation, this is the default threshold to report a process as lagging.
+	if status.Cluster.Qos.WorstDataLagStorageServer.Seconds > maximumDataLag {
+		return fmt.Errorf(
+			"worst data lag is too high, current worst data lag in seconds: %0.2f, maximum allowed lag:  %0.2f",
+			status.Cluster.Qos.WorstDataLagStorageServer.Seconds,
+			maximumDataLag,
+		)
+	}
+
+	if status.Cluster.Qos.WorstDurabilityLagStorageServer.Seconds > maximumDataLag {
+		return fmt.Errorf(
+			"worst durability lag is too high, current worst durability lag in seconds: %0.2f, maximum allowed lag:  %0.2f",
+			status.Cluster.Qos.WorstDurabilityLagStorageServer.Seconds,
+			maximumDataLag,
 		)
 	}
 
@@ -828,6 +839,115 @@ func CanSafelyRemoveMaintenanceMode(status *fdbv1beta2.FoundationDBStatus) error
 	}
 
 	return CheckQosStatus(status)
+}
+
+// CanSafelyRemoveMaintenanceModeForProcesses returns nil if the maintenance mode can be disabled because every
+// non-excluded storage process in the maintenance zone reports storage roles that have caught up. Unlike
+// CanSafelyRemoveMaintenanceMode, it doesn't check the cluster-wide worst queue sizes, as those follow the write load of
+// the cluster rather than the state of the processes under maintenance.
+func CanSafelyRemoveMaintenanceModeForProcesses(
+	status *fdbv1beta2.FoundationDBStatus,
+	maxDataLag time.Duration,
+	maxDurabilityLag time.Duration,
+) error {
+	err := DefaultSafetyChecks(status, 10, "remove maintenance mode")
+	if err != nil {
+		return err
+	}
+
+	err = checkWorstStorageServerLag(status)
+	if err != nil {
+		return err
+	}
+
+	maintenanceZone := string(status.Cluster.MaintenanceZone)
+	if maintenanceZone == "" {
+		return nil
+	}
+
+	var processesInZone int
+	for _, process := range status.Cluster.Processes {
+		if process.ProcessClass != fdbv1beta2.ProcessClassStorage || process.Excluded {
+			continue
+		}
+
+		// FDB only reports the locality once the process metrics are available, so a recently restarted process
+		// can be reported without a zone ID.
+		zoneID, ok := process.Locality[fdbv1beta2.FDBLocalityZoneIDKey]
+		if !ok {
+			return fmt.Errorf(
+				"storage process %s reports no zone ID, cannot verify if it is in maintenance zone %s",
+				process.Address,
+				maintenanceZone,
+			)
+		}
+
+		if zoneID != maintenanceZone && !process.UnderMaintenance {
+			continue
+		}
+
+		processesInZone++
+		err = checkStorageRolesCaughtUp(process, maxDataLag, maxDurabilityLag)
+		if err != nil {
+			return fmt.Errorf("maintenance zone %s: %w", maintenanceZone, err)
+		}
+	}
+
+	if processesInZone == 0 {
+		return fmt.Errorf("no storage processes reported in maintenance zone %s", maintenanceZone)
+	}
+
+	return nil
+}
+
+// checkStorageRolesCaughtUp returns an error if the process reports no storage role, or if any of its storage roles
+// reports no lag information or exceeds the provided lag limits.
+func checkStorageRolesCaughtUp(
+	process fdbv1beta2.FoundationDBStatusProcessInfo,
+	maxDataLag time.Duration,
+	maxDurabilityLag time.Duration,
+) error {
+	var hasStorageRole bool
+	for _, role := range process.Roles {
+		if role.Role != string(fdbv1beta2.ProcessRoleStorage) {
+			continue
+		}
+
+		hasStorageRole = true
+		if role.DurabilityLag == nil {
+			return fmt.Errorf(
+				"storage role %s on process %s reports no lag information",
+				role.ID,
+				process.Address,
+			)
+		}
+
+		if role.DataLag.Seconds > maxDataLag.Seconds() {
+			return fmt.Errorf(
+				"storage role %s on process %s has a data lag of %0.2f seconds, maximum allowed lag: %0.2f",
+				role.ID,
+				process.Address,
+				role.DataLag.Seconds,
+				maxDataLag.Seconds(),
+			)
+		}
+
+		if role.DurabilityLag.Seconds > maxDurabilityLag.Seconds() {
+			return fmt.Errorf(
+				"storage role %s on process %s has a durability lag of %0.2f seconds, maximum allowed lag: %0.2f",
+				role.ID,
+				process.Address,
+				role.DurabilityLag.Seconds,
+				maxDurabilityLag.Seconds(),
+			)
+		}
+	}
+
+	if !hasStorageRole {
+		return fmt.Errorf("storage process %s reports no storage role", process.Address)
+	}
+
+	return nil
 }
 
 // PrettyPrintBytes will return a string that represents the storedBytes in a human-readable format.

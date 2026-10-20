@@ -2,6 +2,10 @@
 
 package v1beta2
 
+import (
+	apiv1beta2 "github.com/FoundationDB/fdb-kubernetes-operator/v2/api/v1beta2"
+)
+
 // MaintenanceModeOptionsApplyConfiguration represents a declarative configuration of the MaintenanceModeOptions type for use
 // with apply.
 //
@@ -21,6 +25,22 @@ type MaintenanceModeOptionsApplyConfiguration struct {
 	// MaintenanceModeTimeSeconds provides the duration for the zone to be in maintenance. It will automatically be switched off after the time elapses.
 	// Default is 600.
 	MaintenanceModeTimeSeconds *int `json:"maintenanceModeTimeSeconds,omitempty"`
+	// ResetCheck defines the check that must pass before the operator resets the maintenance mode, once all
+	// processes in the maintenance zone have been restarted. ClusterQos checks the cluster-wide QoS metrics,
+	// including the worst storage and log server queue sizes. ProcessesUnderMaintenance checks that the storage
+	// processes in the maintenance zone report a storage role that has caught up, based on MaxDataLagSeconds and
+	// MaxDurabilityLagSeconds, and checks the cluster-wide worst storage server lag but not the queue sizes.
+	// Default is ClusterQos.
+	ResetCheck *apiv1beta2.MaintenanceModeResetCheck `json:"resetCheck,omitempty"`
+	// MaxDataLagSeconds defines the maximum data lag, in seconds, of the storage roles in the maintenance zone
+	// for the ProcessesUnderMaintenance reset check.
+	// Default is 5.
+	MaxDataLagSeconds *int `json:"maxDataLagSeconds,omitempty"`
+	// MaxDurabilityLagSeconds defines the maximum durability lag, in seconds, of the storage roles in the
+	// maintenance zone for the ProcessesUnderMaintenance reset check. The durability lag of a healthy storage
+	// server is around 5 seconds, as storage servers keep 5 seconds of versions in memory.
+	// Default is 10.
+	MaxDurabilityLagSeconds *int `json:"maxDurabilityLagSeconds,omitempty"`
 }
 
 // MaintenanceModeOptionsApplyConfiguration constructs a declarative configuration of the MaintenanceModeOptions type for use with
@@ -50,5 +70,29 @@ func (b *MaintenanceModeOptionsApplyConfiguration) WithResetMaintenanceMode(valu
 // If called multiple times, the MaintenanceModeTimeSeconds field is set to the value of the last call.
 func (b *MaintenanceModeOptionsApplyConfiguration) WithMaintenanceModeTimeSeconds(value int) *MaintenanceModeOptionsApplyConfiguration {
 	b.MaintenanceModeTimeSeconds = &value
+	return b
+}
+
+// WithResetCheck sets the ResetCheck field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ResetCheck field is set to the value of the last call.
+func (b *MaintenanceModeOptionsApplyConfiguration) WithResetCheck(value apiv1beta2.MaintenanceModeResetCheck) *MaintenanceModeOptionsApplyConfiguration {
+	b.ResetCheck = &value
+	return b
+}
+
+// WithMaxDataLagSeconds sets the MaxDataLagSeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxDataLagSeconds field is set to the value of the last call.
+func (b *MaintenanceModeOptionsApplyConfiguration) WithMaxDataLagSeconds(value int) *MaintenanceModeOptionsApplyConfiguration {
+	b.MaxDataLagSeconds = &value
+	return b
+}
+
+// WithMaxDurabilityLagSeconds sets the MaxDurabilityLagSeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxDurabilityLagSeconds field is set to the value of the last call.
+func (b *MaintenanceModeOptionsApplyConfiguration) WithMaxDurabilityLagSeconds(value int) *MaintenanceModeOptionsApplyConfiguration {
+	b.MaxDurabilityLagSeconds = &value
 	return b
 }

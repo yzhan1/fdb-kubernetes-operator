@@ -108,6 +108,10 @@ var _ = Describe("FoundationDBStatus", func() {
 								Seconds:  0.19625800000000002,
 								Versions: 196258,
 							},
+							DurabilityLag: &FoundationDBStatusLagInfo{
+								Seconds:  5.1962599999999997,
+								Versions: 5196258,
+							},
 							KVStoreUsedBytes:      ptr.To[int64](104878232),
 							KVStoreTotalBytes:     ptr.To[int64](135012552704),
 							KVStoreFreeBytes:      ptr.To[int64](84178223104),
@@ -146,6 +150,10 @@ var _ = Describe("FoundationDBStatus", func() {
 							DataLag: FoundationDBStatusLagInfo{
 								Seconds:  2.1227,
 								Versions: 2122697,
+							},
+							DurabilityLag: &FoundationDBStatusLagInfo{
+								Seconds:  5,
+								Versions: 5000000,
 							},
 							KVStoreUsedBytes:      ptr.To[int64](104878232),
 							KVStoreTotalBytes:     ptr.To[int64](135012552704),
@@ -198,6 +206,10 @@ var _ = Describe("FoundationDBStatus", func() {
 							DataLag: FoundationDBStatusLagInfo{
 								Seconds:  0.19625800000000002,
 								Versions: 196258,
+							},
+							DurabilityLag: &FoundationDBStatusLagInfo{
+								Seconds:  5,
+								Versions: 5000000,
 							},
 							KVStoreUsedBytes:      ptr.To[int64](104861752),
 							KVStoreTotalBytes:     ptr.To[int64](135012552704),

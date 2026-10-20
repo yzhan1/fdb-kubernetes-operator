@@ -2598,7 +2598,258 @@ var _ = Describe("status_checks", func() {
 			),
 		),
 	)
+
+	DescribeTable(
+		"checking if the maintenance mode can be removed based on the processes under maintenance",
+		func(
+			status *fdbv1beta2.FoundationDBStatus,
+			maxDataLag time.Duration,
+			maxDurabilityLag time.Duration,
+			expected string,
+		) {
+			err := CanSafelyRemoveMaintenanceModeForProcesses(
+				status,
+				maxDataLag,
+				maxDurabilityLag,
+			)
+			if expected == "" {
+				Expect(err).NotTo(HaveOccurred())
+			} else {
+				Expect(err).To(MatchError(expected))
+			}
+		},
+		Entry("the storage process in the maintenance zone has caught up",
+			maintenanceStatus(nil),
+			5*time.Second,
+			10*time.Second,
+			"",
+		),
+		Entry(
+			"the storage process in the maintenance zone has a high data lag",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-1"].Roles[0].DataLag.Seconds = 6
+			}),
+			5*time.Second,
+			10*time.Second,
+			"maintenance zone zone-a: storage role storage-1-role on process 192.168.0.1:4501 has a data lag of 6.00 seconds, maximum allowed lag: 5.00",
+		),
+		Entry(
+			"the storage process in the maintenance zone has a high durability lag",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-1"].Roles[0].DurabilityLag.Seconds = 12
+			}),
+			5*time.Second,
+			10*time.Second,
+			"maintenance zone zone-a: storage role storage-1-role on process 192.168.0.1:4501 has a durability lag of 12.00 seconds, maximum allowed lag: 10.00",
+		),
+		Entry(
+			"the storage process in the maintenance zone has a durability lag below a custom limit",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-1"].Roles[0].DurabilityLag.Seconds = 12
+			}),
+			5*time.Second,
+			15*time.Second,
+			"",
+		),
+		Entry(
+			"the storage process in the maintenance zone has no storage role",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				process := status.Cluster.Processes["storage-1"]
+				process.Roles = []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+					{Role: string(fdbv1beta2.ProcessRoleCoordinator)},
+				}
+				status.Cluster.Processes["storage-1"] = process
+			}),
+			5*time.Second,
+			10*time.Second,
+			"maintenance zone zone-a: storage process 192.168.0.1:4501 reports no storage role",
+		),
+		Entry(
+			"the storage role in the maintenance zone has no lag information",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-1"].Roles[0] = fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+					Role: string(fdbv1beta2.ProcessRoleStorage),
+					ID:   "storage-1-role",
+				}
+			}),
+			5*time.Second,
+			10*time.Second,
+			"maintenance zone zone-a: storage role storage-1-role on process 192.168.0.1:4501 reports no lag information",
+		),
+		Entry(
+			"a storage process has no locality",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				process := status.Cluster.Processes["storage-1"]
+				process.Locality = nil
+				process.UnderMaintenance = false
+				process.Roles = nil
+				status.Cluster.Processes["storage-1"] = process
+			}),
+			5*time.Second,
+			10*time.Second,
+			"storage process 192.168.0.1:4501 reports no zone ID, cannot verify if it is in maintenance zone zone-a",
+		),
+		Entry(
+			"a lagging storage process in another zone is ignored",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-2"].Roles[0].DataLag.Seconds = 30
+				status.Cluster.Processes["storage-2"].Roles[0].DurabilityLag.Seconds = 30
+			}),
+			5*time.Second,
+			10*time.Second,
+			"",
+		),
+		Entry(
+			"an excluded storage process in the maintenance zone without a storage role is ignored",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Processes["storage-3"] = fdbv1beta2.FoundationDBStatusProcessInfo{
+					Address: fdbv1beta2.ProcessAddress{
+						IPAddress: net.ParseIP("192.168.0.3"),
+						Port:      4501,
+					},
+					ProcessClass:     fdbv1beta2.ProcessClassStorage,
+					Excluded:         true,
+					UnderMaintenance: true,
+					Locality: map[string]string{
+						fdbv1beta2.FDBLocalityZoneIDKey: "zone-a",
+					},
+				}
+			}),
+			5*time.Second,
+			10*time.Second,
+			"",
+		),
+		Entry(
+			"no storage process is reported in the maintenance zone",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				delete(status.Cluster.Processes, "storage-1")
+			}),
+			5*time.Second,
+			10*time.Second,
+			"no storage processes reported in maintenance zone zone-a",
+		),
+		Entry(
+			"the worst queue sizes are above the limits of the cluster QoS check",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Qos.WorstQueueBytesLogServer = 3 * maximumQueueByteSize
+				status.Cluster.Qos.WorstQueueBytesStorageServer = 2 * maximumQueueByteSize
+			}),
+			5*time.Second,
+			10*time.Second,
+			"",
+		),
+		Entry(
+			"the cluster-wide worst durability lag is too high",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.Qos.WorstDurabilityLagStorageServer.Seconds = maximumDataLag + 1
+			}),
+			5*time.Second,
+			10*time.Second,
+			"worst durability lag is too high, current worst durability lag in seconds: 61.00, maximum allowed lag:  60.00",
+		),
+		Entry(
+			"the cluster is unavailable",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Client.DatabaseStatus.Available = false
+			}),
+			5*time.Second,
+			10*time.Second,
+			"cluster is unavailable, cannot remove maintenance mode",
+		),
+		Entry(
+			"no maintenance zone is set",
+			maintenanceStatus(func(status *fdbv1beta2.FoundationDBStatus) {
+				status.Cluster.MaintenanceZone = ""
+				delete(status.Cluster.Processes, "storage-1")
+			}),
+			5*time.Second,
+			10*time.Second,
+			"",
+		),
+	)
 })
+
+// maintenanceStatus returns a machine-readable status with zone-a under maintenance, a caught up storage process
+// in zone-a, a log process in zone-a and a storage process in zone-b. If modify is not nil, it is applied to the
+// status before it is returned.
+func maintenanceStatus(
+	modify func(status *fdbv1beta2.FoundationDBStatus),
+) *fdbv1beta2.FoundationDBStatus {
+	status := &fdbv1beta2.FoundationDBStatus{
+		Client: fdbv1beta2.FoundationDBStatusLocalClientInfo{
+			DatabaseStatus: fdbv1beta2.FoundationDBStatusClientDBStatus{
+				Available: true,
+			},
+		},
+		Cluster: fdbv1beta2.FoundationDBStatusClusterInfo{
+			MaintenanceZone: "zone-a",
+			Processes: map[fdbv1beta2.ProcessGroupID]fdbv1beta2.FoundationDBStatusProcessInfo{
+				"storage-1": {
+					Address: fdbv1beta2.ProcessAddress{
+						IPAddress: net.ParseIP("192.168.0.1"),
+						Port:      4501,
+					},
+					ProcessClass:     fdbv1beta2.ProcessClassStorage,
+					UnderMaintenance: true,
+					Locality: map[string]string{
+						fdbv1beta2.FDBLocalityZoneIDKey: "zone-a",
+					},
+					Roles: []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+						{
+							Role: string(fdbv1beta2.ProcessRoleStorage),
+							ID:   "storage-1-role",
+							DataLag: fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 0,
+							},
+							DurabilityLag: &fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 5.3,
+							},
+						},
+					},
+				},
+				"log-1": {
+					Address: fdbv1beta2.ProcessAddress{
+						IPAddress: net.ParseIP("192.168.0.4"),
+						Port:      4501,
+					},
+					ProcessClass:     fdbv1beta2.ProcessClassLog,
+					UnderMaintenance: true,
+					Locality: map[string]string{
+						fdbv1beta2.FDBLocalityZoneIDKey: "zone-a",
+					},
+					Roles: []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+						{Role: string(fdbv1beta2.ProcessRoleLog)},
+					},
+				},
+				"storage-2": {
+					Address: fdbv1beta2.ProcessAddress{
+						IPAddress: net.ParseIP("192.168.0.2"),
+						Port:      4501,
+					},
+					ProcessClass: fdbv1beta2.ProcessClassStorage,
+					Locality: map[string]string{
+						fdbv1beta2.FDBLocalityZoneIDKey: "zone-b",
+					},
+					Roles: []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+						{
+							Role: string(fdbv1beta2.ProcessRoleStorage),
+							ID:   "storage-2-role",
+							DurabilityLag: &fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 5.3,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if modify != nil {
+		modify(status)
+	}
+
+	return status
+}
 
 var _ = Describe("CanSafelyChangeCoordinators", func() {
 	var cluster *fdbv1beta2.FoundationDBCluster

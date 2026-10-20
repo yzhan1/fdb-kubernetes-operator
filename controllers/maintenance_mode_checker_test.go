@@ -434,5 +434,94 @@ var _ = Describe("maintenance_mode_checker", func() {
 				})
 			},
 		)
+
+		When("the ProcessesUnderMaintenance reset check is used", func() {
+			BeforeEach(func() {
+				cluster.Spec.AutomationOptions.MaintenanceModeOptions.ResetCheck = ptr.To(
+					fdbv1beta2.MaintenanceModeResetCheckProcessesUnderMaintenance,
+				)
+				Expect(
+					adminClient.SetProcessesUnderMaintenance(
+						[]fdbv1beta2.ProcessGroupID{targetProcessGroup},
+						time.Now().Add(-1*time.Minute).Unix(),
+					),
+				).NotTo(HaveOccurred())
+			})
+
+			When("the restarted storage process reports no storage role", func() {
+				It("should requeue", func() {
+					Expect(requeue).NotTo(BeNil())
+					Expect(requeue.delayedRequeue).To(BeTrue())
+					Expect(
+						requeue.curError,
+					).To(MatchError(ContainSubstring("reports no storage role")))
+				})
+
+				It("shouldn't reset the maintenance", func() {
+					status, err := adminClient.GetStatus()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(status.Cluster.MaintenanceZone).To(Equal(currentMaintenanceZone))
+				})
+
+				It("should remove the entry from the maintenance list", func() {
+					processesUnderMaintenance, err := adminClient.GetProcessesUnderMaintenance()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(processesUnderMaintenance).To(BeEmpty())
+				})
+			})
+
+			When("the restarted storage process is lagging", func() {
+				BeforeEach(func() {
+					adminClient.ProcessRoles[targetProcessGroup] = []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+						{
+							Role: string(fdbv1beta2.ProcessRoleStorage),
+							DataLag: fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 30,
+							},
+							DurabilityLag: &fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 35,
+							},
+						},
+					}
+				})
+
+				It("should requeue", func() {
+					Expect(requeue).NotTo(BeNil())
+					Expect(requeue.delayedRequeue).To(BeTrue())
+					Expect(
+						requeue.curError,
+					).To(MatchError(ContainSubstring("has a data lag of 30.00 seconds")))
+				})
+
+				It("shouldn't reset the maintenance", func() {
+					status, err := adminClient.GetStatus()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(status.Cluster.MaintenanceZone).To(Equal(currentMaintenanceZone))
+				})
+			})
+
+			When("the restarted storage process has caught up", func() {
+				BeforeEach(func() {
+					adminClient.ProcessRoles[targetProcessGroup] = []fdbv1beta2.FoundationDBStatusProcessRoleInfo{
+						{
+							Role: string(fdbv1beta2.ProcessRoleStorage),
+							DurabilityLag: &fdbv1beta2.FoundationDBStatusLagInfo{
+								Seconds: 5.3,
+							},
+						},
+					}
+				})
+
+				It("shouldn't requeue", func() {
+					Expect(requeue).To(BeNil())
+				})
+
+				It("should reset the maintenance", func() {
+					status, err := adminClient.GetStatus()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(status.Cluster.MaintenanceZone).To(BeEmpty())
+				})
+			})
+		})
 	})
 })

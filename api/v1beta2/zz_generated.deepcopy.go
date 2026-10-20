@@ -1688,6 +1688,11 @@ func (in *FoundationDBStatusProcessMessage) DeepCopy() *FoundationDBStatusProces
 func (in *FoundationDBStatusProcessRoleInfo) DeepCopyInto(out *FoundationDBStatusProcessRoleInfo) {
 	*out = *in
 	out.DataLag = in.DataLag
+	if in.DurabilityLag != nil {
+		in, out := &in.DurabilityLag, &out.DurabilityLag
+		*out = new(FoundationDBStatusLagInfo)
+		**out = **in
+	}
 	if in.KVStoreUsedBytes != nil {
 		in, out := &in.KVStoreUsedBytes, &out.KVStoreUsedBytes
 		*out = new(int64)
@@ -1985,6 +1990,21 @@ func (in *MaintenanceModeOptions) DeepCopyInto(out *MaintenanceModeOptions) {
 	}
 	if in.MaintenanceModeTimeSeconds != nil {
 		in, out := &in.MaintenanceModeTimeSeconds, &out.MaintenanceModeTimeSeconds
+		*out = new(int)
+		**out = **in
+	}
+	if in.ResetCheck != nil {
+		in, out := &in.ResetCheck, &out.ResetCheck
+		*out = new(MaintenanceModeResetCheck)
+		**out = **in
+	}
+	if in.MaxDataLagSeconds != nil {
+		in, out := &in.MaxDataLagSeconds, &out.MaxDataLagSeconds
+		*out = new(int)
+		**out = **in
+	}
+	if in.MaxDurabilityLagSeconds != nil {
+		in, out := &in.MaxDurabilityLagSeconds, &out.MaxDurabilityLagSeconds
 		*out = new(int)
 		**out = **in
 	}
