@@ -27,7 +27,6 @@ import (
 	"maps"
 	"math"
 	"slices"
-	"strings"
 
 	fdbv1beta2 "github.com/FoundationDB/fdb-kubernetes-operator/v2/api/v1beta2"
 	"github.com/FoundationDB/fdb-kubernetes-operator/v2/pkg/podclient"
@@ -137,16 +136,12 @@ func InfoFromSidecar(
 	// Take the zone ID from the FDB_ZONE_ID if present.
 	zoneID, present := substitutions[fdbv1beta2.EnvNameZoneID]
 	if !present {
-		// If the FDB_ZONE_ID is not present, the user specified another environment variable that represents the
+		// If the FDB_ZONE_ID is not present, the user specified other environment variables that represent the
 		// zone ID.
-		var zoneVariable string
-		if strings.HasPrefix(cluster.Spec.FaultDomain.ValueFrom, "$") {
-			zoneVariable = cluster.Spec.FaultDomain.ValueFrom[1:]
-		} else {
-			zoneVariable = fdbv1beta2.EnvNameZoneID
+		zoneID, err = cluster.GetZoneID(substitutions)
+		if err != nil {
+			return Info{}, fmt.Errorf("no zone ID found in Sidecar information: %w", err)
 		}
-
-		zoneID = substitutions[zoneVariable]
 	}
 
 	if zoneID == "" {

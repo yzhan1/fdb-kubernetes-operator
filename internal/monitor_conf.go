@@ -258,7 +258,10 @@ func GetMonitorProcessConfiguration(
 
 	logGroup := cluster.GetLogGroup()
 
-	zoneVariable := cluster.GetZoneVariableName()
+	zoneArguments, err := cluster.GetZoneIDArguments()
+	if err != nil {
+		return monitorapi.ProcessConfiguration{}, err
+	}
 
 	// currentPodIPFamily will reflect the current IP family of the Pod. If the Pod doesn't exist, we fall back
 	// to the default IP family defined on the cluster level.
@@ -338,10 +341,12 @@ func GetMonitorProcessConfiguration(
 		},
 		monitorapi.Argument{
 			ArgumentType: monitorapi.ConcatenateArgumentType,
-			Values: []monitorapi.Argument{
-				{Value: getKnobParameter(fdbv1beta2.FDBLocalityZoneIDKey, true)},
-				{ArgumentType: monitorapi.EnvironmentArgumentType, Source: zoneVariable},
-			},
+			Values: append(
+				[]monitorapi.Argument{
+					{Value: getKnobParameter(fdbv1beta2.FDBLocalityZoneIDKey, true)},
+				},
+				zoneArguments...,
+			),
 		},
 	)
 
@@ -385,13 +390,18 @@ func GetMonitorProcessConfiguration(
 			hasDataHallLocality = true
 		}
 
+		customParameterArguments, err := generateMonitorArgumentFromCustomParameter(
+			argument,
+			currentPodIPFamily,
+			imageType,
+		)
+		if err != nil {
+			return monitorapi.ProcessConfiguration{}, err
+		}
+
 		configuration.Arguments = append(configuration.Arguments, monitorapi.Argument{
 			ArgumentType: monitorapi.ConcatenateArgumentType,
-			Values: generateMonitorArgumentFromCustomParameter(
-				argument,
-				currentPodIPFamily,
-				imageType,
-			),
+			Values:       customParameterArguments,
 		})
 	}
 
@@ -445,42 +455,33 @@ func generateMonitorArgumentFromCustomParameter(
 	argument fdbv1beta2.FoundationDBCustomParameter,
 	podIPFamily int,
 	imageType fdbv1beta2.ImageType,
-) []monitorapi.Argument {
+) ([]monitorapi.Argument, error) {
 	splitArgument := strings.Split(string(argument), "=")
 	knob := strings.TrimSpace(splitArgument[0])
 	knobValue := strings.TrimSpace(splitArgument[1])
-	customParameterArgument := make([]monitorapi.Argument, 2)
-	customParameterArgument[0] = monitorapi.Argument{
-		ArgumentType: monitorapi.LiteralArgumentType,
-		Value:        "--" + knob + "=",
+
+	// Environment variables referenced in the value, e.g. $FDB_INSTANCE_ID, will be replaced with their actual value.
+	values, err := fdbv1beta2.ParseVariableTemplate(knobValue)
+	if err != nil {
+		return nil, fmt.Errorf("invalid custom parameter %q: %w", argument, err)
 	}
 
-	// If the value starts with an $ we assume that the value is an environment variable and should be replaced
-	// with the actual value.
-	if strings.HasPrefix(knobValue, "$") {
-		value := strings.Trim(knobValue, "$")
-		newArgument := monitorapi.Argument{
-			ArgumentType: monitorapi.EnvironmentArgumentType,
-			Source:       value,
-		}
-
+	for idx, value := range values {
 		// If a user specifies the fdbv1beta2.EnvNamePodIP or fdbv1beta2.EnvNamePublicIP environment variables in the
 		// custom parameters, e.g. to add a new locality, we should pass this as the proper type.
-		if podIPFamily != fdbv1beta2.PodIPFamilyUnset && imageType == fdbv1beta2.ImageTypeUnified &&
-			(value == fdbv1beta2.EnvNamePodIP || value == fdbv1beta2.EnvNamePublicIP) {
-			newArgument.ArgumentType = monitorapi.IPListArgumentType
-			newArgument.IPFamily = podIPFamily
-		}
-
-		customParameterArgument[1] = newArgument
-	} else {
-		customParameterArgument[1] = monitorapi.Argument{
-			ArgumentType: monitorapi.LiteralArgumentType,
-			Value:        knobValue,
+		if value.ArgumentType == monitorapi.EnvironmentArgumentType &&
+			podIPFamily != fdbv1beta2.PodIPFamilyUnset &&
+			imageType == fdbv1beta2.ImageTypeUnified &&
+			(value.Source == fdbv1beta2.EnvNamePodIP || value.Source == fdbv1beta2.EnvNamePublicIP) {
+			values[idx].ArgumentType = monitorapi.IPListArgumentType
+			values[idx].IPFamily = podIPFamily
 		}
 	}
 
-	return customParameterArgument
+	return append([]monitorapi.Argument{{
+		ArgumentType: monitorapi.LiteralArgumentType,
+		Value:        "--" + knob + "=",
+	}}, values...), nil
 }
 
 // getKnobParameter will return the knob parameter with a trailing =. If the provided knob is a locality the key will be

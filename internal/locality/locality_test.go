@@ -167,6 +167,50 @@ func generateCandidates(dcIDs []string, processesPerDc int, numberOfZones int) [
 	return candidates
 }
 
+func clusterWithZoneTemplate(valueFrom string) *fdbv1beta2.FoundationDBCluster {
+	return &fdbv1beta2.FoundationDBCluster{
+		Spec: fdbv1beta2.FoundationDBClusterSpec{
+			FaultDomain: fdbv1beta2.FoundationDBClusterFaultDomain{
+				Key:       corev1.LabelHostname,
+				ValueFrom: valueFrom,
+			},
+		},
+		Status: fdbv1beta2.FoundationDBClusterStatus{
+			RequiredAddresses: fdbv1beta2.RequiredAddressSet{
+				NonTLS: true,
+			},
+		},
+	}
+}
+
+func sidecarPodWithEnv(env ...corev1.EnvVar) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			Labels: map[string]string{
+				fdbv1beta2.FDBProcessGroupIDLabel: "test",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "foundationdb-kubernetes-sidecar",
+					Args: []string{
+						"--public-ip-family",
+						"4",
+					},
+					Env: env,
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIPs: []corev1.PodIP{
+				{IP: "1.1.1.1"},
+			},
+		},
+	}
+}
+
 var _ = Describe("Localities", func() {
 	var cluster *fdbv1beta2.FoundationDBCluster
 
@@ -1369,6 +1413,34 @@ var _ = Describe("Localities", func() {
 					},
 				},
 			},
+			Info{},
+			true,
+		),
+		Entry("locality information is rendered from a template of environment variables",
+			clusterWithZoneTemplate("dc1-${CUSTOM_ENV}-$FDB_INSTANCE_ID"),
+			sidecarPodWithEnv(corev1.EnvVar{Name: "CUSTOM_ENV", Value: "custom-zone-id"}),
+			Info{
+				ID: "test",
+				Address: fdbv1beta2.ProcessAddress{
+					IPAddress: net.ParseIP("1.1.1.1"),
+					Port:      4501,
+				},
+				LocalityData: map[string]string{
+					fdbv1beta2.FDBLocalityZoneIDKey:  "dc1-custom-zone-id-test",
+					fdbv1beta2.FDBLocalityDNSNameKey: "",
+				},
+			},
+			false,
+		),
+		Entry("locality information is rendered from a template with a missing variable",
+			clusterWithZoneTemplate("dc1-$CUSTOM_ENV"),
+			sidecarPodWithEnv(),
+			Info{},
+			true,
+		),
+		Entry("locality information is rendered from a template with an empty variable",
+			clusterWithZoneTemplate("dc1-$CUSTOM_ENV"),
+			sidecarPodWithEnv(corev1.EnvVar{Name: "CUSTOM_ENV", Value: ""}),
 			Info{},
 			true,
 		),

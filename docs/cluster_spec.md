@@ -216,7 +216,7 @@ FoundationDBClusterFaultDomain describes the fault domain that a cluster is repl
 | ----- | ----------- | ------ | -------- |
 | key | Key provides a topology key for the fault domain to replicate across. | string | false |
 | value | Value provides a hardcoded value to use for the zoneid for the pods. | string | false |
-| valueFrom | ValueFrom provides a field selector to use as the source of the fault domain. | string | false |
+| valueFrom | ValueFrom provides the source of the zoneid for the pods. A value without a \"$\" is a field selector on the pod, e.g. spec.nodeName. A value with a \"$\" is a template of environment variables, referenced as $NAME or ${NAME}, and literal text, e.g. \"$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_RACK\". A value that starts with \"$\", contains no other \"$\" and doesn't start with \"${\" references a single variable named by the rest of the value. | string | false |
 | zoneCount | ZoneCount provides the number of fault domains in the data center where these processes are running. This is only used in the `kubernetes-cluster` fault domain strategy. | int | false |
 | zoneIndex | ZoneIndex provides the index of this Kubernetes cluster in the list of KCs in the data center. This is only used in the `kubernetes-cluster` fault domain strategy. | int | false |
 
@@ -454,7 +454,7 @@ ProcessSettings defines process-level settings.
 | ----- | ----------- | ------ | -------- |
 | podTemplate | PodTemplate allows customizing the pod. If a container image with a tag is specified the operator will throw an error and stop processing the cluster. | *[corev1.PodTemplateSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#podtemplatespec-v1-core) | false |
 | volumeClaimTemplate | VolumeClaimTemplate allows customizing the persistent volume claim for the pod.  This will be ignored by the operator for stateless processes. | *[corev1.PersistentVolumeClaim](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#persistentvolumeclaim-v1-core) | false |
-| customParameters | CustomParameters defines additional parameters to pass to the fdbserver process. Only parameters for the [fdbserver] section are supported. Parameters from the [general] and [fdbmonitor] section are not supported. For more Information see: https://apple.github.io/foundationdb/configuration.html#general-section | FoundationDBCustomParameters | false |
+| customParameters | CustomParameters defines additional parameters to pass to the fdbserver process. Only parameters for the [fdbserver] section are supported. Parameters from the [general] and [fdbmonitor] section are not supported. For more Information see: https://apple.github.io/foundationdb/configuration.html#general-section Values can reference environment variables with the same template syntax as FaultDomain.ValueFrom, e.g. \"locality_rack=$REGION-$RACK\". | FoundationDBCustomParameters | false |
 
 [Back to TOC](#table-of-contents)
 

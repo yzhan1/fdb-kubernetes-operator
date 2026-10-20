@@ -2276,6 +2276,58 @@ var _ = Describe("pod_models", func() {
 			})
 		})
 
+		Context("with a fault domain template", func() {
+			BeforeEach(func() {
+				cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "rack",
+					ValueFrom: "pdxa-$RACK",
+				}
+			})
+
+			It("should not set the zone ID from a pod field in the sidecar environment", func() {
+				spec, err = GetPodSpec(
+					cluster,
+					GetProcessGroup(cluster, fdbv1beta2.ProcessClassStorage, 1),
+				)
+				Expect(err).NotTo(HaveOccurred())
+				initContainer := spec.InitContainers[0]
+				Expect(initContainer.Name).To(Equal(fdbv1beta2.InitContainerName))
+				Expect(initContainer.Env).To(Equal([]corev1.EnvVar{
+					{Name: fdbv1beta2.EnvNamePublicIP, ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+					}},
+					{Name: fdbv1beta2.EnvNamePodIP, ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+					}},
+					{Name: fdbv1beta2.EnvNameMachineID, ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
+					}},
+					{Name: fdbv1beta2.EnvNameInstanceID, Value: "storage-1"},
+					{
+						Name:  fdbv1beta2.EnvNameDNSName,
+						Value: "operator-test-1-storage-1.operator-test-1.my-ns.svc.cluster.local",
+					},
+				}))
+			})
+
+			It(
+				"should not set the zone ID in the main container environment of the unified image",
+				func() {
+					cluster.Spec.ImageType = ptr.To(fdbv1beta2.ImageTypeUnified)
+					spec, err = GetPodSpec(
+						cluster,
+						GetProcessGroup(cluster, fdbv1beta2.ProcessClassStorage, 1),
+					)
+					Expect(err).NotTo(HaveOccurred())
+					mainContainer := spec.Containers[0]
+					Expect(mainContainer.Name).To(Equal(fdbv1beta2.MainContainerName))
+					for _, env := range mainContainer.Env {
+						Expect(env.Name).NotTo(Equal(fdbv1beta2.EnvNameZoneID))
+					}
+				},
+			)
+		})
+
 		Context("with cross-Kubernetes replication", func() {
 			BeforeEach(func() {
 				cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{

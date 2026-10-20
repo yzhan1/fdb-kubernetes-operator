@@ -21,6 +21,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -861,6 +862,273 @@ var _ = Describe("monitor_conf", func() {
 			})
 		})
 
+		When("the cluster has a fault domain template", func() {
+			BeforeEach(func() {
+				cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "infra.x.com/rack",
+					ValueFrom: "$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_INFRA_X_COM_RACK",
+				}
+			})
+
+			It("concatenates the variables and literals as the zone ID", func() {
+				config, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Arguments).To(HaveLen(baseArgumentLength))
+				Expect(
+					config.Arguments,
+				).To(ContainElement(monitorapi.Argument{ArgumentType: monitorapi.ConcatenateArgumentType, Values: []monitorapi.Argument{
+					{Value: "--locality_zoneid="},
+					{
+						ArgumentType: monitorapi.EnvironmentArgumentType,
+						Source:       "NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION",
+					},
+					{ArgumentType: monitorapi.LiteralArgumentType, Value: "-"},
+					{
+						ArgumentType: monitorapi.EnvironmentArgumentType,
+						Source:       "NODE_LABEL_INFRA_X_COM_RACK",
+					},
+				}}))
+
+				commandLineArgs, err := config.GenerateArguments(1, map[string]string{
+					fdbv1beta2.EnvNamePublicIP:                 "192.168.0.2",
+					fdbv1beta2.EnvNameInstanceID:               "storage-1",
+					fdbv1beta2.EnvNameMachineID:                "node-1",
+					fdbv1beta2.EnvNameDNSName:                  "storage-1.example",
+					"NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION": "pdxa",
+					"NODE_LABEL_INFRA_X_COM_RACK":              "ceh",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(commandLineArgs).To(ContainElement("--locality_zoneid=pdxa-ceh"))
+			})
+		})
+
+		When("the cluster has a malformed fault domain template", func() {
+			BeforeEach(func() {
+				cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "infra.x.com/rack",
+					ValueFrom: "pdxa-$",
+				}
+			})
+
+			It("returns an error", func() {
+				_, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		// The JSON below is what the operator rendered before variable templates were supported. A change would update
+		// the monitor configuration of existing clusters and restart their processes.
+		DescribeTable("rendering the zone ID for existing fault domain configurations",
+			func(faultDomain fdbv1beta2.FoundationDBClusterFaultDomain, expected string) {
+				cluster.Spec.FaultDomain = faultDomain
+				config, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				var zoneArgument []byte
+				for _, argument := range config.Arguments {
+					if len(argument.Values) > 0 &&
+						argument.Values[0].Value == "--locality_zoneid=" {
+						zoneArgument, err = json.Marshal(argument)
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+				Expect(string(zoneArgument)).To(Equal(expected))
+			},
+			Entry(
+				"default fault domain",
+				fdbv1beta2.FoundationDBClusterFaultDomain{},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"FDB_ZONE_ID"}]}`,
+			),
+			Entry(
+				"field path",
+				fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       corev1.LabelHostname,
+					ValueFrom: "spec.nodeName",
+				},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"FDB_ZONE_ID"}]}`,
+			),
+			Entry(
+				"single variable",
+				fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "rack",
+					ValueFrom: "$RACK",
+				},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"RACK"}]}`,
+			),
+			Entry(
+				"single variable with a \"-\" in its name",
+				fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "failure-domain.beta.kubernetes.io/zone",
+					ValueFrom: "$NODE_LABEL_FAILURE-DOMAIN_BETA_KUBERNETES_IO_ZONE",
+				},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"NODE_LABEL_FAILURE-DOMAIN_BETA_KUBERNETES_IO_ZONE"}]}`,
+			),
+			Entry(
+				"fake replication",
+				fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key: fdbv1beta2.NoneFaultDomainKey,
+				},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"FDB_ZONE_ID"}]}`,
+			),
+			Entry(
+				"multi-Kubernetes replication",
+				fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:   "foundationdb.org/kubernetes-cluster",
+					Value: "kc2",
+				},
+				`{"type":"Concatenate","values":[{"value":"--locality_zoneid="},{"type":"Environment","source":"FDB_ZONE_ID"}]}`,
+			),
+		)
+
+		// The JSON below is what the operator rendered before variable templates were supported.
+		DescribeTable(
+			"rendering existing custom parameters",
+			func(parameter fdbv1beta2.FoundationDBCustomParameter, podIPFamily *int, expected string) {
+				cluster.Spec.Routing.PodIPFamily = podIPFamily
+				cluster.Spec.Processes = map[fdbv1beta2.ProcessClass]fdbv1beta2.ProcessSettings{
+					fdbv1beta2.ProcessClassGeneral: {
+						CustomParameters: fdbv1beta2.FoundationDBCustomParameters{parameter},
+					},
+				}
+				config, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Arguments).To(HaveLen(baseArgumentLength + 1))
+				customParameter, err := json.Marshal(config.Arguments[10])
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(customParameter)).To(Equal(expected))
+			},
+			Entry(
+				"literal",
+				fdbv1beta2.FoundationDBCustomParameter("knob_disable_posix_kernel_aio = 1"),
+				nil,
+				`{"type":"Concatenate","values":[{"type":"Literal","value":"--knob_disable_posix_kernel_aio="},{"type":"Literal","value":"1"}]}`,
+			),
+			Entry(
+				"empty value",
+				fdbv1beta2.FoundationDBCustomParameter("knob_test="),
+				nil,
+				`{"type":"Concatenate","values":[{"type":"Literal","value":"--knob_test="},{"type":"Literal"}]}`,
+			),
+			Entry(
+				"single variable",
+				fdbv1beta2.FoundationDBCustomParameter("locality_disk_id=$FDB_INSTANCE_ID"),
+				nil,
+				`{"type":"Concatenate","values":[{"type":"Literal","value":"--locality_disk_id="},{"type":"Environment","source":"FDB_INSTANCE_ID"}]}`,
+			),
+			Entry(
+				"single variable with a \"-\" in its name",
+				fdbv1beta2.FoundationDBCustomParameter(
+					"locality_zone=$NODE_LABEL_FAILURE-DOMAIN_BETA_KUBERNETES_IO_ZONE",
+				),
+				nil,
+				`{"type":"Concatenate","values":[{"type":"Literal","value":"--locality_zone="},{"type":"Environment","source":"NODE_LABEL_FAILURE-DOMAIN_BETA_KUBERNETES_IO_ZONE"}]}`,
+			),
+			Entry(
+				"public IP with an IP family",
+				fdbv1beta2.FoundationDBCustomParameter("locality_my_fancy_ip = $FDB_PUBLIC_IP"),
+				ptr.To(fdbv1beta2.PodIPFamilyIPv6),
+				`{"type":"Concatenate","values":[{"type":"Literal","value":"--locality_my_fancy_ip="},{"type":"IPList","source":"FDB_PUBLIC_IP","ipFamily":6}]}`,
+			),
+		)
+
+		When("the cluster has custom parameters with variable templates", func() {
+			BeforeEach(func() {
+				cluster.Spec.Routing.PodIPFamily = ptr.To(fdbv1beta2.PodIPFamilyIPv6)
+				cluster.Spec.Processes = map[fdbv1beta2.ProcessClass]fdbv1beta2.ProcessSettings{
+					fdbv1beta2.ProcessClassGeneral: {
+						CustomParameters: fdbv1beta2.FoundationDBCustomParameters{
+							"locality_rack = $NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_INFRA_X_COM_RACK",
+							"locality_ip = ip-${FDB_PUBLIC_IP}",
+						},
+					},
+				}
+			})
+
+			It("concatenates the variables and literals", func() {
+				config, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Arguments).To(HaveLen(baseArgumentLength + 2))
+				Expect(config.Arguments[10]).To(Equal(monitorapi.Argument{
+					ArgumentType: monitorapi.ConcatenateArgumentType,
+					Values: []monitorapi.Argument{
+						{ArgumentType: monitorapi.LiteralArgumentType, Value: "--locality_rack="},
+						{
+							ArgumentType: monitorapi.EnvironmentArgumentType,
+							Source:       "NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION",
+						},
+						{ArgumentType: monitorapi.LiteralArgumentType, Value: "-"},
+						{
+							ArgumentType: monitorapi.EnvironmentArgumentType,
+							Source:       "NODE_LABEL_INFRA_X_COM_RACK",
+						},
+					}}))
+				Expect(config.Arguments[11]).To(Equal(monitorapi.Argument{
+					ArgumentType: monitorapi.ConcatenateArgumentType,
+					Values: []monitorapi.Argument{
+						{ArgumentType: monitorapi.LiteralArgumentType, Value: "--locality_ip="},
+						{ArgumentType: monitorapi.LiteralArgumentType, Value: "ip-"},
+						{
+							ArgumentType: monitorapi.IPListArgumentType,
+							Source:       fdbv1beta2.EnvNamePublicIP,
+							IPFamily:     fdbv1beta2.PodIPFamilyIPv6,
+						},
+					}}))
+			})
+		})
+
+		When("the cluster has a malformed custom parameter template", func() {
+			BeforeEach(func() {
+				cluster.Spec.Processes = map[fdbv1beta2.ProcessClass]fdbv1beta2.ProcessSettings{
+					fdbv1beta2.ProcessClassGeneral: {
+						CustomParameters: fdbv1beta2.FoundationDBCustomParameters{
+							"locality_rack = ${REGION",
+						},
+					},
+				}
+			})
+
+			It("returns an error", func() {
+				_, err := GetMonitorProcessConfiguration(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					1,
+					fdbv1beta2.ImageTypeUnified,
+					nil,
+				)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
 		When("the spec has custom peer verification rules", func() {
 			BeforeEach(func() {
 				cluster.Spec.MainContainer.PeerVerificationRules = "S.CN=foundationdb.org"
@@ -1344,6 +1612,41 @@ var _ = Describe("monitor_conf", func() {
 							substitutions[fdbv1beta2.EnvNameDNSName],
 						),
 					}, " ")))
+				})
+			})
+
+			When("using a fault domain template", func() {
+				BeforeEach(func() {
+					cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{
+						Key:       "infra.x.com/rack",
+						ValueFrom: "$REGION-${RACK}",
+					}
+				})
+
+				It("should substitute the variables in the zone ID", func() {
+					substitutions, err := GetSubstitutionsFromClusterAndPod(
+						logr.Discard(),
+						cluster,
+						pod,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(substitutions).NotTo(HaveKey(fdbv1beta2.EnvNameZoneID))
+					substitutions["REGION"] = "pdxa"
+					substitutions["RACK"] = "ceh"
+
+					command, err = GetStartCommandWithSubstitutions(
+						cluster,
+						processClass,
+						substitutions,
+						1,
+						1,
+						cluster.DesiredImageType(),
+						nil,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(
+						strings.Split(command, " "),
+					).To(ContainElement("--locality_zoneid=pdxa-ceh"))
 				})
 			})
 
@@ -1998,6 +2301,52 @@ var _ = Describe("monitor_conf", func() {
 					fmt.Sprintf("locality_instance_id = $%s", fdbv1beta2.EnvNameInstanceID),
 					fmt.Sprintf("locality_machineid = $%s", fdbv1beta2.EnvNameMachineID),
 					"locality_zoneid = $RACK",
+					fmt.Sprintf("locality_dns_name = $%s", fdbv1beta2.EnvNameDNSName),
+				}, "\n")))
+			})
+		})
+
+		Context("with a fault domain and custom parameter templates", func() {
+			BeforeEach(func() {
+				cluster.Spec.FaultDomain = fdbv1beta2.FoundationDBClusterFaultDomain{
+					Key:       "rack",
+					ValueFrom: "${REGION}-$RACK",
+				}
+				cluster.Spec.Processes = map[fdbv1beta2.ProcessClass]fdbv1beta2.ProcessSettings{
+					fdbv1beta2.ProcessClassGeneral: {
+						CustomParameters: fdbv1beta2.FoundationDBCustomParameters{
+							"locality_rack = dc1-$RACK",
+						},
+					},
+				}
+				conf, err = GetMonitorConf(
+					cluster,
+					fdbv1beta2.ProcessClassStorage,
+					nil,
+					cluster.GetStorageServersPerPod(),
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should render the variables for the sidecar substitution", func() {
+				Expect(conf).To(Equal(strings.Join([]string{
+					"[general]",
+					"kill_on_configuration_change = false",
+					"restart_delay = 60",
+					"[fdbserver.1]",
+					fmt.Sprintf("command = $%s/fdbserver", fdbv1beta2.EnvNameBinaryDir),
+					"cluster_file = /var/fdb/data/fdb.cluster",
+					"seed_cluster_file = /var/dynamic-conf/fdb.cluster",
+					fmt.Sprintf("public_address = $%s:4501", fdbv1beta2.EnvNamePublicIP),
+					"class = storage",
+					"logdir = /var/log/fdb-trace-logs",
+					"loggroup = " + cluster.Name,
+					"datadir = /var/fdb/data",
+					fmt.Sprintf("locality_instance_id = $%s", fdbv1beta2.EnvNameInstanceID),
+					fmt.Sprintf("locality_machineid = $%s", fdbv1beta2.EnvNameMachineID),
+					"locality_zoneid = $REGION-$RACK",
+					"locality_rack = dc1-$RACK",
 					fmt.Sprintf("locality_dns_name = $%s", fdbv1beta2.EnvNameDNSName),
 				}, "\n")))
 			})
