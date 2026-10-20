@@ -12,8 +12,13 @@ type FoundationDBClusterFaultDomainApplyConfiguration struct {
 	Key *string `json:"key,omitempty"`
 	// Value provides a hardcoded value to use for the zoneid for the pods.
 	Value *string `json:"value,omitempty"`
-	// ValueFrom provides a field selector to use as the source of the fault
-	// domain.
+	// ValueFrom provides the source of the zoneid for the pods. A value
+	// without a "$" is a field selector on the pod, e.g. spec.nodeName. A value
+	// with a "$" is a template of environment variables, referenced as $NAME
+	// or ${NAME}, and literal text, e.g.
+	// "$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_RACK". A value
+	// that starts with "$", contains no other "$" and doesn't start with "${"
+	// references a single variable named by the rest of the value.
 	ValueFrom *string `json:"valueFrom,omitempty"`
 	// ZoneCount provides the number of fault domains in the data center where
 	// these processes are running. This is only used in the

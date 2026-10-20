@@ -31,6 +31,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	monitorapi "github.com/apple/foundationdb/fdbkubernetesmonitor/api"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -4729,28 +4730,110 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 		})
 	})
 
-	When("getting the zone variable name", func() {
-		DescribeTable("it returns the env var name that carries the zone ID",
-			func(faultDomain FoundationDBClusterFaultDomain, expected string) {
+	When("getting the zone ID arguments", func() {
+		DescribeTable("it returns the monitor arguments that make up the zone ID",
+			func(faultDomain FoundationDBClusterFaultDomain, expected []monitorapi.Argument) {
 				cluster := &FoundationDBCluster{
 					Spec: FoundationDBClusterSpec{FaultDomain: faultDomain},
 				}
-				Expect(cluster.GetZoneVariableName()).To(Equal(expected))
+				Expect(cluster.GetZoneIDArguments()).To(Equal(expected))
 			},
 			Entry("when FaultDomain is unset, defaults to EnvNameZoneID",
-				FoundationDBClusterFaultDomain{}, EnvNameZoneID),
-			Entry("when FaultDomain is set but ValueFrom not $-prefixed, defaults to EnvNameZoneID",
+				FoundationDBClusterFaultDomain{},
+				[]monitorapi.Argument{
+					{ArgumentType: monitorapi.EnvironmentArgumentType, Source: EnvNameZoneID},
+				}),
+			Entry("when ValueFrom is a field path, defaults to EnvNameZoneID",
 				FoundationDBClusterFaultDomain{
 					Key:       "kubernetes.io/hostname",
 					ValueFrom: "spec.nodeName",
 				},
-				EnvNameZoneID),
-			Entry("when FaultDomain is set and ValueFrom is $-prefixed, strips the $",
+				[]monitorapi.Argument{
+					{ArgumentType: monitorapi.EnvironmentArgumentType, Source: EnvNameZoneID},
+				}),
+			Entry("when ValueFrom is a single variable, uses that variable",
 				FoundationDBClusterFaultDomain{
 					Key:       "foo.com/rack",
 					ValueFrom: "$NODE_LABEL_FOO_COM_RACK",
 				},
-				"NODE_LABEL_FOO_COM_RACK"),
+				[]monitorapi.Argument{
+					{
+						ArgumentType: monitorapi.EnvironmentArgumentType,
+						Source:       "NODE_LABEL_FOO_COM_RACK",
+					},
+				}),
+			Entry("when ValueFrom is a template, uses its variables and literals",
+				FoundationDBClusterFaultDomain{
+					Key:       "foo.com/rack",
+					ValueFrom: "pdxa-$NODE_LABEL_FOO_COM_RACK",
+				},
+				[]monitorapi.Argument{
+					{ArgumentType: monitorapi.LiteralArgumentType, Value: "pdxa-"},
+					{
+						ArgumentType: monitorapi.EnvironmentArgumentType,
+						Source:       "NODE_LABEL_FOO_COM_RACK",
+					},
+				}),
+		)
+
+		It("returns an error for a malformed template", func() {
+			cluster := &FoundationDBCluster{
+				Spec: FoundationDBClusterSpec{
+					FaultDomain: FoundationDBClusterFaultDomain{ValueFrom: "pdxa-$"},
+				},
+			}
+			_, err := cluster.GetZoneIDArguments()
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	When("getting the zone ID from substitutions", func() {
+		DescribeTable(
+			"it renders the zone ID",
+			func(valueFrom string, substitutions map[string]string, expected string, expectedErr bool) {
+				cluster := &FoundationDBCluster{
+					Spec: FoundationDBClusterSpec{
+						FaultDomain: FoundationDBClusterFaultDomain{ValueFrom: valueFrom},
+					},
+				}
+				zoneID, err := cluster.GetZoneID(substitutions)
+				if expectedErr {
+					Expect(err).To(HaveOccurred())
+					return
+				}
+				Expect(err).NotTo(HaveOccurred())
+				Expect(zoneID).To(Equal(expected))
+			},
+			Entry("field path",
+				"spec.nodeName",
+				map[string]string{EnvNameZoneID: "node-1"},
+				"node-1",
+				false),
+			Entry("field path with missing FDB_ZONE_ID",
+				"spec.nodeName",
+				map[string]string{},
+				"",
+				true),
+			Entry("single variable",
+				"$RACK",
+				map[string]string{EnvNameZoneID: "node-1", "RACK": "ceh"},
+				"ceh",
+				false),
+			Entry("template",
+				"$REGION-$RACK",
+				map[string]string{"REGION": "pdxa", "RACK": "ceh"},
+				"pdxa-ceh",
+				false),
+			Entry("template with a missing variable",
+				"$REGION-$RACK",
+				map[string]string{"RACK": "ceh"},
+				"",
+				true),
+			Entry("template with an empty variable",
+				"$REGION-$RACK",
+				map[string]string{"REGION": "", "RACK": "ceh"},
+				"",
+				true),
 		)
 	})
 
@@ -5251,6 +5334,58 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 					},
 				},
 				fmt.Errorf("version: 7.0.0 is not supported, minimum supported version is: 7.1.0"),
+			),
+			Entry("using a fault domain and custom parameters with variable templates",
+				&FoundationDBCluster{
+					Spec: FoundationDBClusterSpec{
+						Version: Versions.Default.String(),
+						FaultDomain: FoundationDBClusterFaultDomain{
+							Key:       "infra.x.com/rack",
+							ValueFrom: "$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_INFRA_X_COM_RACK",
+						},
+						Processes: map[ProcessClass]ProcessSettings{
+							ProcessClassGeneral: {
+								CustomParameters: FoundationDBCustomParameters{
+									"knob_disable_posix_kernel_aio = 1",
+									"locality_disk_id = $FDB_INSTANCE_ID",
+									"locality_rack = ${REGION}_$RACK",
+								},
+							},
+						},
+					},
+				},
+				nil,
+			),
+			Entry("using a malformed fault domain template",
+				&FoundationDBCluster{
+					Spec: FoundationDBClusterSpec{
+						Version: Versions.Default.String(),
+						FaultDomain: FoundationDBClusterFaultDomain{
+							Key:       "infra.x.com/rack",
+							ValueFrom: "${REGION-$RACK",
+						},
+					},
+				},
+				fmt.Errorf(
+					"invalid faultDomain.valueFrom: invalid variable reference at position 0 in \"${REGION-$RACK\", use $NAME or ${NAME}",
+				),
+			),
+			Entry("using a custom parameter with a bare $",
+				&FoundationDBCluster{
+					Spec: FoundationDBClusterSpec{
+						Version: Versions.Default.String(),
+						Processes: map[ProcessClass]ProcessSettings{
+							ProcessClassStorage: {
+								CustomParameters: FoundationDBCustomParameters{
+									"locality_rack = $REGION-$",
+								},
+							},
+						},
+					},
+				},
+				fmt.Errorf(
+					"invalid customParameter \"locality_rack = $REGION-$\" for storage: invalid variable reference at position 8 in \"$REGION-$\", use $NAME or ${NAME}",
+				),
 			),
 		)
 

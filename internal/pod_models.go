@@ -1001,7 +1001,7 @@ func getEnvForMonitorConfigSubstitution(
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 			}},
 		)
-		if !strings.HasPrefix(faultDomainSource, "$") {
+		if !cluster.FaultDomainValueFromIsTemplate() {
 			env = append(
 				env,
 				corev1.EnvVar{Name: fdbv1beta2.EnvNameZoneID, ValueFrom: &corev1.EnvVarSource{

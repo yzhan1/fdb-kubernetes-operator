@@ -35,6 +35,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	monitorapi "github.com/apple/foundationdb/fdbkubernetesmonitor/api"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -1517,6 +1518,8 @@ type ProcessSettings struct {
 	// process. Only parameters for the [fdbserver] section are supported. Parameters
 	// from the [general] and [fdbmonitor] section are not supported. For more Information
 	// see: https://apple.github.io/foundationdb/configuration.html#general-section
+	// Values can reference environment variables with the same template syntax as
+	// FaultDomain.ValueFrom, e.g. "locality_rack=$REGION-$RACK".
 	CustomParameters FoundationDBCustomParameters `json:"customParameters,omitempty"`
 }
 
@@ -2213,8 +2216,13 @@ type FoundationDBClusterFaultDomain struct {
 	// Value provides a hardcoded value to use for the zoneid for the pods.
 	Value string `json:"value,omitempty"`
 
-	// ValueFrom provides a field selector to use as the source of the fault
-	// domain.
+	// ValueFrom provides the source of the zoneid for the pods. A value
+	// without a "$" is a field selector on the pod, e.g. spec.nodeName. A value
+	// with a "$" is a template of environment variables, referenced as $NAME
+	// or ${NAME}, and literal text, e.g.
+	// "$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_RACK". A value
+	// that starts with "$", contains no other "$" and doesn't start with "${"
+	// references a single variable named by the rest of the value.
 	ValueFrom string `json:"valueFrom,omitempty"`
 
 	// ZoneCount provides the number of fault domains in the data center where
@@ -2816,17 +2824,50 @@ func (cluster *FoundationDBCluster) GetDNSDomain() string {
 	return ptr.Deref(cluster.Spec.Routing.DNSDomain, "cluster.local")
 }
 
-// GetZoneVariableName returns the name of the environment variable that
-// carries the FDB zone ID for this cluster. When FaultDomain.ValueFrom is set
-// to a value prefixed with "$" (the convention used to source the zone from a
-// node label resolved by the fdb-kubernetes-monitor at runtime), the name of
-// that variable is returned with the "$" stripped. Otherwise, the canonical
-// EnvNameZoneID ("FDB_ZONE_ID") is returned.
-func (cluster *FoundationDBCluster) GetZoneVariableName() string {
-	if strings.HasPrefix(cluster.Spec.FaultDomain.ValueFrom, "$") {
-		return cluster.Spec.FaultDomain.ValueFrom[1:]
+// FaultDomainValueFromIsTemplate returns true if FaultDomain.ValueFrom references environment variables, i.e. it
+// contains a "$". In this case the zone ID is rendered from those variables by the fdb-kubernetes-monitor or the
+// sidecar instead of being read from a Pod field into EnvNameZoneID.
+func (cluster *FoundationDBCluster) FaultDomainValueFromIsTemplate() bool {
+	return strings.Contains(cluster.Spec.FaultDomain.ValueFrom, "$")
+}
+
+// GetZoneIDArguments returns the fdb-kubernetes-monitor arguments that make up the zone ID: the variables and literal
+// text of FaultDomain.ValueFrom if it is a template (see ParseVariableTemplate), otherwise the EnvNameZoneID
+// environment variable.
+func (cluster *FoundationDBCluster) GetZoneIDArguments() ([]monitorapi.Argument, error) {
+	if !cluster.FaultDomainValueFromIsTemplate() {
+		return []monitorapi.Argument{
+			{ArgumentType: monitorapi.EnvironmentArgumentType, Source: EnvNameZoneID},
+		}, nil
 	}
-	return EnvNameZoneID
+
+	return ParseVariableTemplate(cluster.Spec.FaultDomain.ValueFrom)
+}
+
+// GetZoneID returns the zone ID of a process based on the variable substitutions of its Pod. An error is returned if
+// a referenced variable is missing or empty.
+func (cluster *FoundationDBCluster) GetZoneID(substitutions map[string]string) (string, error) {
+	arguments, err := cluster.GetZoneIDArguments()
+	if err != nil {
+		return "", err
+	}
+
+	var zoneID strings.Builder
+	for _, argument := range arguments {
+		if argument.ArgumentType != monitorapi.EnvironmentArgumentType {
+			zoneID.WriteString(argument.Value)
+			continue
+		}
+
+		value := substitutions[argument.Source]
+		if value == "" {
+			return "", fmt.Errorf("zone ID variable %s is missing or empty", argument.Source)
+		}
+
+		zoneID.WriteString(value)
+	}
+
+	return zoneID.String(), nil
 }
 
 // GetRemovalMode returns the removal mode of the cluster or default to PodUpdateModeZone if unset.
@@ -3415,6 +3456,34 @@ func (cluster *FoundationDBCluster) Validate(
 					err,
 				),
 			)
+		}
+	}
+
+	_, err = cluster.GetZoneIDArguments()
+	if err != nil {
+		validations = append(validations, fmt.Sprintf("invalid faultDomain.valueFrom: %s", err))
+	}
+
+	for processClass, settings := range cluster.Spec.Processes {
+		for _, parameter := range settings.CustomParameters {
+			// Same value extraction as the monitor conf generation.
+			splitParameter := strings.Split(string(parameter), "=")
+			if len(splitParameter) < 2 {
+				continue
+			}
+
+			_, err = ParseVariableTemplate(strings.TrimSpace(splitParameter[1]))
+			if err != nil {
+				validations = append(
+					validations,
+					fmt.Sprintf(
+						"invalid customParameter %q for %s: %s",
+						parameter,
+						processClass,
+						err,
+					),
+				)
+			}
 		}
 	}
 

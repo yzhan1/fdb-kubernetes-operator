@@ -22,6 +22,8 @@ type ProcessSettingsApplyConfiguration struct {
 	// process. Only parameters for the [fdbserver] section are supported. Parameters
 	// from the [general] and [fdbmonitor] section are not supported. For more Information
 	// see: https://apple.github.io/foundationdb/configuration.html#general-section
+	// Values can reference environment variables with the same template syntax as
+	// FaultDomain.ValueFrom, e.g. "locality_rack=$REGION-$RACK".
 	CustomParameters *apiv1beta2.FoundationDBCustomParameters `json:"customParameters,omitempty"`
 }
 

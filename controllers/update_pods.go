@@ -428,7 +428,13 @@ func getPodsToUpdate(
 			continue
 		}
 
-		zone := substitutions[cluster.GetZoneVariableName()]
+		zone, err := cluster.GetZoneID(substitutions)
+		if err != nil {
+			logger.Info("Could not determine zone ID, using an empty zone",
+				"processGroupID", processGroup.ProcessGroupID,
+				"error", err.Error())
+		}
+
 		if reconciler.SimulationOptions.SimulateZones {
 			zone = "simulation"
 		}

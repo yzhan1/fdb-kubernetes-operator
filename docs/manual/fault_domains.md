@@ -38,6 +38,50 @@ The node label keys will be prefixed by `"NODE_LABEL"` and "/" and "." will be r
 `NODE_LABEL_FOUNDATIONDB_ORG_TESTING = awesome"` will be generated. This feature requires that the according RBAC permissions for the unified image (`ServiceAccount`) are setup.
 Those labels can then be added as localities or used as `ValueFrom` in the `FaultDomain` configuration of the cluster config.
 The environment variable name in `ValueFrom` must be prefixed with a `$`.
+Multiple variables can be combined, see [combining variables in the zone ID](#combining-variables-in-the-zone-id).
+
+### Combining variables in the zone ID
+
+`valueFrom` can be a template that combines environment variables and literal text.
+This is useful when the node label used as fault domain is only unique within a site.
+For example, in a multi-region cluster where each region is a separate `FoundationDBCluster`, two regions can both have a rack named `ceh`.
+Data distribution builds teams per region, so data placement is not affected, but maintenance zones and locality-based exclusions match the `zoneid` without the data center: `maintenance on ceh` or `exclude locality_zoneid:ceh` affects the `ceh` racks in both regions.
+Adding the region to the zone ID makes the zones unique:
+
+```yaml
+apiVersion: apps.foundationdb.org/v1beta2
+kind: FoundationDBCluster
+metadata:
+  name: sample-cluster
+spec:
+  imageType: unified
+  dataCenter: pdxa
+  faultDomain:
+    key: infra.x.com/rack
+    valueFrom: "$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_INFRA_X_COM_RACK"
+```
+
+A process on a node with the labels `topology.kubernetes.io/region=pdxa` and `infra.x.com/rack=ceh` gets the zone ID `pdxa-ceh`.
+
+The rules for `valueFrom` are:
+
+- A value without a `$` is a field selector on the pod, e.g. `spec.nodeName`.
+- A variable is referenced as `$NAME` or `${NAME}`. `$NAME` takes all following letters, digits and `_`. Use `${NAME}` if letters, digits or `_` follow the variable directly, e.g. `${REGION}_$RACK`, or if the name contains `-` or `.`.
+- A value that starts with `$`, contains no other `$` and doesn't start with `${` references a single variable named by the rest of the value, as in earlier operator versions, e.g. `$NODE_LABEL_FAILURE-DOMAIN_BETA_KUBERNETES_IO_ZONE`.
+- The operator rejects the cluster spec if any other `$` does not start a valid reference, e.g. a trailing `$` or an unterminated `${`.
+- Every referenced variable must be set to a non-empty value. The operator doesn't set `FDB_ZONE_ID` from a pod field for a template.
+
+`customParameters` support the same syntax, e.g. `locality_rack=$NODE_LABEL_TOPOLOGY_KUBERNETES_IO_REGION-$NODE_LABEL_INFRA_X_COM_RACK`.
+A `$` anywhere in a custom parameter value starts a variable reference.
+
+With the split image, the sidecar replaces `$NAME` as plain text anywhere in the monitor conf, so templates work if every referenced variable is in `spec.sidecarVariables` and set in the environment of the `foundationdb-kubernetes-init` and `foundationdb-kubernetes-sidecar` containers.
+With the split image, don't put letters, digits or `_` directly after a variable.
+
+**WARNING**: If you change `valueFrom` for an existing cluster, the zone ID of every process changes.
+The operator restarts every process once to apply the new zone ID.
+If the change adds or removes the `FDB_ZONE_ID` environment variable, e.g. from `spec.nodeName` to a template, the operator also recreates the Pods according to the Pod update strategy.
+The zones get new names, so a maintenance zone or a locality-based exclusion (`exclude locality_zoneid:...`) that uses an old zone ID does not match the processes anymore.
+Complete or reset those operations before you change `valueFrom`.
 
 ### Overriding pod anti-affinity
 
